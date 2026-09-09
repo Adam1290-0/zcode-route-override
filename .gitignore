@@ -1,0 +1,11 @@
+wrapper.log
+probe-dump.json
+auth-token
+route-overrides.json
+test/test-tunnel.json
+test/test-config.json
+test/test-token
+*.robak
+*.robak.old
+node_modules/
+__pycache__/

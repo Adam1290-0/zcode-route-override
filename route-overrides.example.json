@@ -1,0 +1,16 @@
+{
+  "routes": [
+    {
+      "match": "api.example-gateway.com",
+      "preset": "claude-code",
+      "customHeaders": {},
+      "removeHeaders": [],
+      "proxy": "http://127.0.0.1:7890"
+    },
+    {
+      "match": "another-relay.example.net",
+      "preset": "codex",
+      "proxy": null
+    }
+  ]
+}
