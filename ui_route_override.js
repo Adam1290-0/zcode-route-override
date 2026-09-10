@@ -67,18 +67,31 @@
   // no such input, which is how we tell them apart. Scoping to the edit panel
   // is what keeps this per-provider instead of "first URL input on page".
   function findEditPanel() {
+    // Primary: the API-key password input, then walk up until the panel also
+    // contains a URL-ish (Base URL) input.
     var pw = document.querySelector('input[type="password"]');
-    if (!pw) return null;
-    var el = pw.parentElement;
-    for (var up = 0; up < 10 && el && el !== document.body; up++) {
-      // panel must also contain a URL-ish input (Base URL field)
-      var inputs = el.querySelectorAll('input:not([type="password"])');
-      for (var i = 0; i < inputs.length; i++) {
-        var v = inputs[i].value || '';
-        var ph = inputs[i].placeholder || '';
-        if (/^https?:\/\//i.test(v) || /example\.com/i.test(ph)) return el;
+    if (pw) {
+      var el = pw.parentElement;
+      for (var up = 0; up < 10 && el && el !== document.body; up++) {
+        var inputs = el.querySelectorAll('input:not([type="password"])');
+        for (var i = 0; i < inputs.length; i++) {
+          var v = inputs[i].value || '';
+          var ph = inputs[i].placeholder || '';
+          if (/^https?:\/\//i.test(v) || /example\.com/i.test(ph)) return el;
+        }
+        el = el.parentElement;
       }
-      el = el.parentElement;
+    }
+    // Fallback: some providers render the API key as masked text (no password
+    // input) — locate the panel by the "Base URL" label text instead.
+    var labels = document.querySelectorAll('label, [class*="label"]');
+    for (var l = 0; l < labels.length; l++) {
+      if (!/base\s*url/i.test(labels[l].textContent || '')) continue;
+      var host = labels[l].parentElement;
+      for (var h = 0; h < 8 && host && host !== document.body; h++) {
+        if (host.querySelectorAll('input').length >= 3) return host; // a form-ish panel
+        host = host.parentElement;
+      }
     }
     return null;
   }
