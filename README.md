@@ -1,301 +1,214 @@
-# ZCode Route Override
+# ZCode Route Override / ZCode 渠道请求头与通道管理
 
-> ZCode（智谱基于 Claude Code 分支的桌面客户端，Electron）的第三方补丁插件：**渠道级请求头预设改写 + per-渠道 VPN 隧道**。
+> 🔗 **广告**：[sharellm.net](https://sharellm.net/sign-up?aff=wb5b) — AI 模型共享平台，海量模型一键体验（注册邀请链接）
 
-[TODO: 效果图——设置页 Base URL 下方出现「请求头」「网络」两个下拉]
+[English](#english) · [中文](#中文)
 
----
+![Version](https://img.shields.io/badge/version-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
-## 1. 解决什么问题
+给 [ZCode](https://zcode.z.ai) 桌面端加上「渠道级请求头预设 + per-渠道 VPN 隧道」：每个自定义模型供应商（中转站）可单独设置请求头伪装（Claude Code / Codex / 自定义）与是否走本地 VPN 代理出站，全部内置在 ZCode 进程内——零额外进程、零手动操作、打开 VPN 即自动生效。模型设置页 Base URL 下方两个下拉直接配置。
 
-| 痛点 | 现象 | 触发场景 |
-|---|---|---|
-| 中转站客户端指纹检测 | `401 unauthorized client detected` | agentrouter.org 等中转站按 UA/客户端特征反查，拒绝非官方客户端 |
-| 被墙中转站连不上 | connect failed / 502 | ZCode 的 Node 子进程不读 Windows 系统代理，被墙域名出不去 |
-| ZCode 内置全局代理浪费流量 | 全部流量都走 VPN | 不想为国内流量也开代理 |
-
-实测验证（2026-09-09，agentrouter.org，真 key）：
-
-- 裸 UA：返回 `401 unauthorized client detected`
-- `claude-code` 预设头集：返回 `200`，可正常对话
+Give the [ZCode](https://zcode.z.ai) desktop app per-provider request-header presets and an optional per-provider VPN tunnel: each custom relay provider gets its own header identity (Claude Code / Codex / custom) and its own "direct vs via-VPN" network mode, all built into ZCode's own process — no extra processes, no manual steps, works the moment your VPN is up. Configured via two dropdowns below the Base URL field in the model-settings page.
 
 ---
 
-## 2. 工作原理
+## 📌 版本对应表 / Version Matrix
 
-### 2.1 架构总览
+**打补丁前请先核对你的 ZCode 版本！**
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│ ZCode 桌面客户端 (Electron)                                   │
-│                                                              │
-│   ┌──────────────────────────┐    ┌────────────────────────┐  │
-│   │ Renderer (app.asar)      │    │ zcode.cjs (CLI 核心)    │  │
-│   │                          │    │ 独立 Node 子进程        │  │
-│   │  ui_route_override.js    │    │                        │  │
-│   │  ├─ 注入 index.html       │    │  wrapper.js            │  │
-│   │  ├─ 模型设置页插入下拉    │    │  ├─ 一行 require 注入  │  │
-│   │  └─ fetch(/api/config)   │    │  ├─ patch globalThis   │  │
-│   │       GET/POST 27891      │    │  │     .fetch          │  │
-│   │                          │    │  ├─ 按域名匹配 routes  │  │
-│   └────────┬─────────────────┘    │  ├─ 重建请求头（白名单）│  │
-│            │ 同源 CSRF            │  └─ 可选 CONNECT 隧道  │  │
-│            │ 127.0.0.1:27891      │                        │  │
-│            ▼                      │  route-overrides.json  │  │
-│   ┌──────────────────────────┐    │  ├─ match / preset /  │
-│   │ wrapper.js 起的配置服务    │◄───┤  │   proxy / custom   │
-│   │  GET /api/config          │    │  └─ headers           │
-│   │  POST /api/config (写盘)  │    │                        │
-│   │  fs.watch 热更新          │    └────────────────────────┘  │
-│   └──────────────────────────┘                                 │
-└──────────────────────────────────────────────────────────────┘
-```
+| 补丁版本 | 适配 ZCode 版本 | 状态 | 主要变化 |
+|---|---|---|---|
+| **v1.0.0（最新）** | **3.11.2** | ✅ 当前维护版本 | 首个版本：渠道级请求头预设（Claude Code / Codex / 自定义）+ per-渠道 VPN 隧道（CONNECT）+ 设置页下拉 UI + 配置服务 token 鉴权 |
 
-### 2.2 关键流程
-
-**请求拦截**——`wrapper.js` 被 `require()` 进 `zcode.cjs` 后立刻 patch `globalThis.fetch`。AI SDK 内部按惯例懒取 `globalThis.fetch.bind(...)`，patch 后所有出站请求都被接管。
-
-**路由匹配**——按域名命中 `route-overrides.json` 里的 `routes[].match`（支持精确匹配与 `*.domain` 后缀）。未命中：完全透传，对原请求零改动。
-
-**请求头重建**——命中后：
-
-1. 透传关键协议头：`content-type`、`accept`、`authorization`、`x-api-key`、`anthropic-version`、`anthropic-beta`
-2. 剥掉 ZCode 特征头：`x-client-language`、`x-device-mid`、ZCode 自带 UA 等
-3. 注入预设身份头（`claude-code` / `codex`），再叠加 `customHeaders`
-4. 按 `removeHeaders` 列表再次清理（自定义头名不区分大小写）
-
-**VPN 隧道（可选）**——手写 `CONNECT` 隧道绕过 ZCode 的全局代理：
-
-```
-fetch → net.connect(127.0.0.1:7890)
-     → 写 "CONNECT api.relay:443 HTTP/1.1"
-     → 等 "HTTP/1.1 200"
-     → tls.connect({ socket, servername })
-     → http.request({ createConnection: () => tlsSock })
-        （注意：不传 agent；传 agent:false 会让它忽略 createConnection 自行拨号）
-     → 响应 Readable.toWeb → Response（保 SSE 流式）
-```
-
-**配置服务**——`wrapper.js` 在 `127.0.0.1:27891` 起 HTTP 服务，路由 `GET/POST /api/config` + `Origin` 校验 + `Host` 校验（防 CSRF 与 DNS rebind）。UI 在 renderer 内 fetch 该端口，配置改动写盘后 `fs.watch` 触发热更新，下次请求秒级生效，不用重启 ZCode。
-
-**Fail-open 设计**——`wrapper.js` 任何异常（解析失败、隧道异常、配置加载错误）都回落原版 `fetch`；注入行本身包在 `try/catch`，`wrapper.js` 文件被误删 ZCode 也照常启动。日志只记事件，**永不记录任何 API key 或 header 值**。
+> ⚠️ 本项目是**社区第三方补丁**，通过向 ZCode 的 CLI 核心（`zcode.cjs`）注入一行 require 并修改 `app.asar`（渲染层注入）实现，**与 ZCode 官方无关**。使用前请阅读 [DISCLAIMER.md](DISCLAIMER.md)。
+>
+> ⚠️ This is a **community third-party patch**. It works by injecting one `require` line into ZCode's CLI core (`zcode.cjs`) and modifying `app.asar` (renderer injection), and is **not affiliated with ZCode**. Read [DISCLAIMER.md](DISCLAIMER.md) before use.
+>
+> **ZCode 是闭源应用且更新频繁**——每次官方更新都可能让补丁失效。若你的 ZCode 版本不在上表中，请勿直接打补丁；可以提 Issue 告知你的版本号，我会评估适配。
 
 ---
 
-## 3. 前置要求
+<a name="english"></a>
+## English
 
-| 项目 | 要求 |
+### Features
+
+- 🎭 **Per-provider header presets**: default / Claude Code / Codex CLI / custom — two dropdowns (请求头 / 网络) below the Base URL field in the model-settings page
+- ✍️ **Custom headers**: multi-line `Header: Value` (prefix `-` to remove a header); the whitelist rebuild strips ZCode's own identity headers (`x-client-language`, `x-device-mid`, …) so relays can't fingerprint you
+- 🌐 **Per-provider VPN tunnel**: only providers you mark go through the proxy (reverse whitelist) — everything else stays direct, zero wasted VPN traffic
+- ⚙️ **Zero extra processes**: the wrapper lives inside ZCode's CLI core (one-line try/catch `require` in `zcode.cjs`); the CONNECT tunnel is Node-stdlib only and dies with ZCode
+- 🔄 **Hot reload**: config written by the UI takes effect within a second (`fs.watch`), no restart
+- 🔐 **Local config service** on `127.0.0.1:27891` with a per-install auth token (embedded into the patched renderer) — random webpages, even `file://`, can't read or rewrite your routes
+- 🛡️ **Fail-open**: any wrapper error falls back to the original request; the injected line is try/catch-wrapped, so a broken wrapper file never breaks ZCode
+- 🅱️ **Plan B**: `standalone-proxy.py` — a zero-invasion reverse-proxy mode (no ZCode patching at all), handy when you don't want to touch the app or as an emergency fallback after an update
+
+### Install
+
+**Prerequisites**: Windows 10/11, Python 3, Node.js (`npx`).
+
+1. **Fully quit ZCode** (right-click the tray icon → Quit, not just closing the window)
+2. Edit `patch-route-override.bat` — set `ASAR_PATH` to your ZCode install path (`...\resources\app.asar`)
+3. Double-click `patch-route-override.bat`, wait for `[SUCCESS]`
+4. Reopen ZCode → Settings → Model Settings → select a custom provider → the 请求头 / 网络 dropdowns appear below Base URL
+
+### Uninstall
+
+1. Quit ZCode
+2. Double-click `unpatch-route-override.bat`
+3. Restores `zcode.cjs.robak` + `app.asar.robak` (created automatically on first patch) — removes this patch only, keeps other injections (e.g. zcode-skin-manager)
+
+### Usage
+
+| What you want | How |
 |---|---|
-| 操作系统 | **Windows 10/11**（脚本用 `tasklist`/`copy`/`npx.cmd`，未测过 macOS/Linux） |
-| ZCode | 桌面版，默认路径 `H:\Zcode\`；其它安装位置改 bat 顶部两个 `ASAR_PATH` 变量即可 |
-| Node.js | `npx` 可用即可，用于 `asar extract` / `asar pack` |
-| Python 3 | 两个 `.py` 注入器需要 |
-| VPN | 可选；仅当要走 VPN 出口时需要。必须是 **HTTP 代理**（如 `http://127.0.0.1:7890`），SOCKS5 不行 |
+| Make a relay accept this client | Select its provider → 请求头 dropdown → **Claude Code** (or Codex CLI for OpenAI-style relays) |
+| Send a relay through your VPN | Select its provider → 网络 dropdown → **走代理（VPN）** |
+| Set fully custom headers | 请求头 → **自定义…** → enter `Header: Value` per line; prefix `-` to delete a header |
+| Turn everything off (soft switch) | Edit `route-overrides.json` next to the wrapper → set `"routes": []` |
+| Plan B without patching ZCode | Run `start-standalone-proxy.bat` and point the provider's Base URL at `http://127.0.0.1:8899/v1` |
 
----
+### Files
 
-## 4. 安装
-
-1. **完全关闭 ZCode**（不是最小化，托盘图标也要退出；运行中打 asar 会被还原）
-2. 编辑 `patch-route-override.bat` 顶部两个路径变量（如果你的 ZCode 不在 `H:\Zcode\`）：
-
-```bat
-set "ASAR_PATH=H:\Zcode\resources\app.asar"
-set "UNPACKED_PATH=H:\Zcode\resources\app.asar.unpacked"
+```
+├── patch-route-override.bat         # one-click patch (extract → inject → repack, auto-restore on failure)
+├── unpatch-route-override.bat       # one-click restore (this patch only)
+├── inject-zcode-wrapper.py          # zcode.cjs injector (idempotent, binary-safe, args for custom paths)
+├── inject-route-override-ui.py      # asar renderer injector (also creates the auth token)
+├── wrapper.js                       # core: fetch patch + header rebuild + CONNECT tunnel + config server
+├── ui_route_override.js             # renderer UI injected into ZCode (dropdowns under Base URL)
+├── standalone-proxy.py              # Plan B: zero-invasion reverse proxy (no patching)
+├── start-standalone-proxy.bat       # Plan B launcher
+├── route-overrides.example.json     # route config example
+└── test/                            # unit tests (headers rebuild, config server auth/CSRF) + integration test
 ```
 
-3. 双击 `patch-route-override.bat`，按步骤执行（解包 + 注入 + 重打包约 2-3 分钟）
-4. 看到 `[SUCCESS] Route Override patched!` 即完成
-5. 重开 ZCode → 设置 → 模型设置 → 选自定义供应商 → Base URL 下方应出现「请求头」「网络」两个下拉
+### FAQ
 
-> 每次 ZCode 升级后补丁会失效（`app.asar` 被覆盖、`zcode.cjs` 被覆盖），**重跑同一 bat 即可**。脚本会自动判断备份是否需要刷新（按 asar 大小比对）。
+**Q: The dropdowns disappear after ZCode auto-updates?**
+A: Updates overwrite `app.asar` and `zcode.cjs`. Re-run `patch-route-override.bat` (each new ZCode version gets a fresh backup automatically). If ZCode jumped several versions, check the [Version Matrix](#-版本对应表--version-matrix) first.
 
-**安全机制说明**：安装时 UI 注入器会在补丁目录生成随机 `auth-token` 文件，并把它嵌入 ZCode 渲染层。配置服务（`127.0.0.1:27891`）只接受携带该 token 的请求——这样即使恶意网页（包括 `file://` 页面）也无法读写你的路由配置。`auth-token` 已在 `.gitignore` 中排除，不会上传。
+**Q: Still getting `401 unauthorized client detected`?**
+A: That relay fingerprints clients. Make sure its 请求头 preset is **Claude Code** (verified: bare UA → 401, claude-code preset → 200) and 网络 is **走代理** if the relay is geo-blocked.
+
+**Q: `402 Budget pool quota has been exhausted`?**
+A: Your account's quota at the relay, not a tool issue — top up / switch pool in their console. A 402 means the full chain (headers + tunnel) already works.
+
+**Q: Will my other providers be affected?**
+A: No. Matching is a reverse whitelist — providers not named in `route-overrides.json` pass through untouched, direct connection, no VPN.
+
+**Q: VPN is off — what happens?**
+A: Only providers marked 走代理 fail (CONNECT refused); all direct providers keep working.
+
+**Q: Where is the config stored?**
+A: `route-overrides.json` next to `wrapper.js` (the patch directory). UI changes write it instantly; editing it manually also works (hot-reloaded). It's gitignored so local routes are never committed.
+
+### How it works
+
+ZCode's CLI core (`zcode.cjs`) is a standalone Node process — the AI SDK resolves `globalThis.fetch` lazily, so patching that one function intercepts every upstream request. This tool injects a single try/catch `require` line at the top of `zcode.cjs`:
+
+1. **Match** — every `fetch` is matched by hostname against `route-overrides.json`; non-matching requests pass through unchanged.
+2. **Rewrite** — matching requests get their headers rebuilt from a whitelist (auth + protocol headers kept, ZCode fingerprint headers dropped), then the chosen preset (claude-code / codex) or custom headers are applied.
+3. **Tunnel (optional)** — if the route sets `proxy`, the request goes out through a hand-rolled CONNECT tunnel (`net.connect` → `CONNECT` → `tls.connect` → `http.request` over the established TLS socket), preserving SSE streaming via `Readable.toWeb`.
+4. **Config service** — `wrapper.js` also serves `127.0.0.1:27891` (GET/POST `/api/config`) with a per-install auth token plus Origin/Host guards; `fs.watch` hot-reloads changes within a second.
+5. **UI** — the renderer script locates the provider edit panel by its API-key password input (the provider list has none), so switching providers rebuilds the controls for the right host — no cross-writing.
 
 ---
 
-## 5. 使用
+<a name="中文"></a>
+## 中文
 
-### 5.1 设置页 UI
+### 功能
 
-进入「设置 - 模型设置」，在每个自定义供应商的 **Base URL 下方** 会插入两个下拉：
+- 🎭 **渠道级请求头预设**：默认 / Claude Code / Codex CLI / 自定义——模型设置页 Base URL 下方「请求头」「网络」两个下拉，每个供应商独立配置
+- ✍️ **自定义请求头**：多行 `Header: Value`（行首 `-` 表示删除该头）；白名单重建会剥掉 ZCode 的特征头（`x-client-language`、`x-device-mid` 等），中转站无法指纹识别
+- 🌐 **per-渠道 VPN 隧道**：只有你点名的渠道走代理（反向白名单）——其他渠道原样直连，一分 VPN 流量都不浪费
+- ⚙️ **零额外进程**：wrapper 活在 ZCode 的 CLI 核心进程里（`zcode.cjs` 头部一行 try/catch require），CONNECT 隧道纯 Node 标准库实现，随 ZCode 生灭
+- 🔄 **热更新**：UI 改配置秒级生效（`fs.watch`），不用重启
+- 🔐 **本地配置服务**：`127.0.0.1:27891`，带安装时生成的随机 token（嵌入渲染层）——恶意网页（包括 `file://`）无法读写你的路由配置
+- 🛡️ **fail-open**：wrapper 任何异常回落原版请求；注入行 try/catch 包裹，wrapper 文件坏了 ZCode 也照常启动
+- 🅱️ **Plan B**：`standalone-proxy.py` 零侵入反代模式（完全不打补丁），不想动 ZCode 本体或补丁失效时的应急方案
 
-| 控件 | 选项 |
+### 安装
+
+**前置条件**：Windows 10/11、Python 3、Node.js（`npx`）。
+
+1. **完全退出 ZCode**（右键系统托盘图标 → 退出，不是关窗口）
+2. 编辑 `patch-route-override.bat`，把 `ASAR_PATH` 改成你的 ZCode 安装路径（`...\resources\app.asar`）
+3. 双击 `patch-route-override.bat`，等待出现 `[SUCCESS]`
+4. 重新打开 ZCode → 设置 → 模型设置 → 选一个自定义供应商 → Base URL 下方出现「请求头」「网络」两个下拉
+
+> 💡 **与其他注入补丁共存**：patch 从**当前** app.asar 解包（不是老备份），注入幂等——重打本补丁自动替换旧注入、保留其他补丁（如 [zcode-skin-manager](https://github.com/Adam1290-0/zcode-skin-manager)、[zcode-account-switcher](https://github.com/Adam1290-0/zcode-account-switcher)）的修改，任意顺序反复打互不覆盖。
+
+### 卸载
+
+1. 退出 ZCode
+2. 双击 `unpatch-route-override.bat`
+3. 恢复 `zcode.cjs.robak` + `app.asar.robak`（首次打补丁时自动备份）——只移除本补丁，保留其他注入补丁
+
+### 使用说明
+
+| 你想做什么 | 怎么做 |
 |---|---|
-| 请求头 | `默认` / `Claude Code` / `Codex CLI` / `自定义` |
-| 网络 | `直连` / `走代理` |
+| 让中转站接受这个客户端 | 选中该供应商 → 「请求头」下拉 → **Claude Code**（OpenAI 风格中转站选 Codex CLI） |
+| 让某渠道走你的 VPN | 选中该供应商 → 「网络」下拉 → **走代理（VPN）** |
+| 设置完全自定义的头 | 「请求头」→ **自定义…** → 每行一条 `Header: Value`；行首 `-` 删除某头 |
+| 一键停用全部规则（软开关） | 编辑 `route-overrides.json`（wrapper 同目录）→ `"routes": []` |
+| 不打补丁的 Plan B | 运行 `start-standalone-proxy.bat`，把该供应商 Base URL 改成 `http://127.0.0.1:8899/v1` |
 
-- 选 `走代理` 后，下方会出现代理地址输入框（默认 `http://127.0.0.1:7890`，按你的本地代理改）
-- 选 `自定义` 后，出现 `Header: Value` 多行编辑框；行首写 `-Header` 表示**删除**该请求头（如 `-User-Agent`）
-- 锚点用 API Key 密码框定位编辑面板（v1.1 修复：旧版用全局第一个 URL 框定位，切换供应商会串台）
-
-### 5.2 预设说明
-
-| 预设 | 身份 |
-|---|---|
-| `claude-code` | `user-agent: claude-cli/2.1.227 (external, cli)` + `x-app: cli` + `anthropic-version: 2023-06-01` + `x-stainless-*` 系列（`lang:js` / `runtime:node` / `os:Windows` / `arch:x64` / `package-version:0.70.0` / `retry-count:0` / `timeout:600` / `helper-method:stream` 等）+ `anthropic-dangerous-direct-browser-access: true` |
-| `codex` | `originator: codex_cli_rs` + `user-agent: codex_cli_rs/{ver} (Windows)` + `openai-beta: responses=experimental` |
-
-### 5.3 配置文件
-
-UI 改动最终落到**补丁仓库目录内**（`wrapper.js` 同目录）：
+### 文件说明
 
 ```
-<克隆目录>\route-overrides.json
+├── patch-route-override.bat         # 一键打补丁（解包 → 注入 → 重打包，失败自动还原）
+├── unpatch-route-override.bat       # 一键还原（仅本补丁）
+├── inject-zcode-wrapper.py          # zcode.cjs 注入器（幂等、二进制安全、路径可传参）
+├── inject-route-override-ui.py      # asar 渲染层注入器（同时生成 auth token）
+├── wrapper.js                       # 核心：fetch patch + 头重建 + CONNECT 隧道 + 配置服务
+├── ui_route_override.js             # 注入 ZCode 渲染层的 UI（Base URL 下两个下拉）
+├── standalone-proxy.py              # Plan B：零侵入独立反代（不打补丁）
+├── start-standalone-proxy.bat       # Plan B 启动脚本
+├── route-overrides.example.json     # 路由配置示例
+└── test/                            # 单测（头重建、配置服务鉴权/CSRF）+ 集成测试
 ```
 
-> `wrapper.js` 以自身位置（`__dirname`）定位配置，因此配置文件就是补丁目录里的 `route-overrides.json`，不需要复制到别处。手动编辑此文件同样生效（`fs.watch` 热更新）。`.gitignore` 已把它排除，本地配置不会被提交。
+### 常见问题
 
-示例（参考 `route-overrides.example.json`）：
+**Q：ZCode 自动更新后下拉没了？**
+A：更新会覆盖 `app.asar` 和 `zcode.cjs`，重新双击 `patch-route-override.bat` 即可（每个新版本会自动刷新备份）。若跨了多个版本，先对照上方[版本对应表](#-版本对应表--version-matrix)确认。
 
-```json
-{
-  "routes": [
-    {
-      "match": "api.example-gateway.com",
-      "preset": "claude-code",
-      "customHeaders": {},
-      "removeHeaders": [],
-      "proxy": "http://127.0.0.1:7890"
-    },
-    {
-      "match": "another-relay.example.net",
-      "preset": "codex",
-      "proxy": null
-    }
-  ]
-}
-```
+**Q：还是报 `401 unauthorized client detected`？**
+A：该中转站做客户端指纹检测。确认它的「请求头」预设是 **Claude Code**（实测：裸 UA → 401，claude-code 预设 → 200），若该站被墙还需把「网络」设为**走代理**。
 
-`proxy: null` 或省略 = 直连；命中后只改头不走隧道。
+**Q：报 `402 Budget pool quota has been exhausted`？**
+A：这是你账号在目标中转站的配额问题，不是工具问题——去他们控制台充值/换池即可。能收到 402 说明改头+隧道全链路已经通了。
 
----
+**Q：其他供应商会受影响吗？**
+A：不会。匹配是反向白名单——`route-overrides.json` 里没点名的供应商原样直连、零接触、不走 VPN。
 
-## 6. 卸载
+**Q：VPN 没开会怎样？**
+A：只有标记了「走代理」的渠道连不上（CONNECT 被拒），其他直连渠道完全不受影响。
 
-### 6.1 软开关（推荐先试）
+**Q：配置存在哪？**
+A：`wrapper.js` 同目录的 `route-overrides.json`。UI 改动即时写入；手动编辑同样生效（热更新）。它已在 `.gitignore` 中，本地路由配置不会被提交。
 
-不改文件，只让所有规则失效——把 `routes` 改成空数组：
+### 原理
 
-```json
-{ "routes": [] }
-```
+ZCode 的 CLI 核心（`zcode.cjs`）是独立 Node 子进程，AI SDK 对 `globalThis.fetch` 是懒取值——patch 这一个函数就能拦截所有上游请求。本工具在 `zcode.cjs` 头部注入一行 try/catch require：
 
-UI 不会显示任何下拉。重启 ZCode 也不影响。
+1. **匹配**：每个 fetch 按域名匹配 `route-overrides.json`；未命中原样放行。
+2. **重写**：命中请求按白名单重建头（保留认证/协议头，剥掉 ZCode 特征头），再叠加所选预设（claude-code / codex）或自定义头。
+3. **隧道（可选）**：路由带 `proxy` 时经手写 CONNECT 隧道出站（`net.connect` → `CONNECT` → `tls.connect` → `http.request` 复用已建立的 TLS socket），`Readable.toWeb` 保证 SSE 流式完整。
+4. **配置服务**：`wrapper.js` 同时提供 `127.0.0.1:27891`（GET/POST `/api/config`），带安装时生成的随机 token + Origin/Host 双重校验；`fs.watch` 秒级热更新。
+5. **UI**：渲染层脚本用 API Key 密码框定位编辑面板（供应商列表没有密码框，天然区分），切换供应商时按当前面板的域名重建控件——不会写串渠道。
 
-### 6.2 完全卸载
+### 更新日志 / Changelog
 
-双击 `unpatch-route-override.bat`：还原 `app.asar.robak` 到 `app.asar`、还原 `zcode.cjs.robak` 到 `zcode.cjs`。
+### v1.0.0
 
-### 6.3 应急恢复
+- 🎭 首个版本：渠道级请求头预设（默认 / Claude Code / Codex CLI / 自定义）+ per-渠道 VPN 隧道（手写 CONNECT，SSE 流式无损）
+- 🛡️ 安全设计：配置服务 token 鉴权（安装时生成并嵌入渲染层）+ Origin/Host 防护；fail-open + 注入行 try/catch 包裹；日志永不记录密钥
+- 🅱️ Plan B 零侵入反代模式（`standalone-proxy.py`，不打补丁，只改供应商 Base URL）
+- ✅ 验证适配 ZCode 3.11.2
 
-如果 bat 在中途失败没还原备份，可手动：
+## License
 
-```bat
-copy /Y "H:\Zcode\resources\app.asar.robak" "H:\Zcode\resources\app.asar"
-copy /Y "H:\Zcode\resources\glm\zcode.cjs.robak" "H:\Zcode\resources\glm\zcode.cjs"
-```
-
-配置目录 `~/.zcode/zcode-route-override/` 卸载时不会被触碰，需要手动删。
-
----
-
-## 6.5 Plan B：独立反代模式（不碰 ZCode 本体）
-
-`standalone-proxy.py` 是**零侵入**的替代方案：不改 `zcode.cjs`、不打 `app.asar`，起一个本地反向代理完成同样的「改头 + 走代理」。
-
-```bat
-:: 默认上游 agentrouter，监听 127.0.0.1:8899
-start-standalone-proxy.bat
-
-:: 指定任意上游
-start-standalone-proxy.bat https://your-relay.example.com
-```
-
-然后把 ZCode 里该供应商的 **Base URL 改成 `http://127.0.0.1:8899/v1`** 即可（Key 照填）。
-
-| | Plan A（补丁） | Plan B（独立反代） |
-|---|---|---|
-| 侵入性 | 修改 zcode.cjs + app.asar | 零修改，只改供应商 Base URL |
-| 进程 | 零额外进程（ZCode 进程内） | 一个本地 python 进程（手动/自启） |
-| UI 设置页下拉 | 有 | 无（改 bat/env 配置） |
-| ZCode 升级后 | 需重跑 patch bat | 不受影响 |
-| 适用 | 日常主力 | 不想动 ZCode 本体 / 补丁失效时应急 |
-
-环境变量：`PROXY_PORT`（默认 8899）、`PROXY_URL`（出站代理，默认 `http://127.0.0.1:12334`，置空则直连）。
-
----
-
-## 7. 测试
-
-### 7.1 单元测试
-
-```bash
-node test/test-headers.js
-node test/test-config-server.js
-```
-
-`test-headers.js` 起本地 echo server，验证 `buildHeaders` 在各预设下的白名单/剥除/合并顺序；`test-config-server.js` 验证配置服务的读写、CSRF 拒绝、热更新触发。
-
-### 7.2 集成测试
-
-```bash
-AGENTROUTER_KEY=sk-ant-... node test/test-tunnel.js
-```
-
-会真的命中 agentrouter.org 跑一次对话，验证隧道 + 预设头集真端到端可用（需要本地 VPN 代理在 `127.0.0.1:7890` 监听）。
-
----
-
-## 8. FAQ
-
-**Q：ZCode 升级后失效怎么办？**
-A：`app.asar` 与 `zcode.cjs` 被覆盖，重跑 `patch-route-override.bat` 即可。脚本会按 asar 大小判断是否刷新备份。
-
-**Q：开了 VPN 还是 `502` / `CONNECT failed` 怎么办？**
-A：本地代理端口不对、或代理不是 HTTP 协议（SOCKS5 不行）。看 `wrapper.log`（在配置目录）里 `proxy CONNECT failed: ...` 一行就能定位。
-
-**Q：选了预设还是 `401 unauthorized client`？**
-A：预设选错了供应商（Anthropic 中转用 `claude-code`，OpenAI/Codex 风格中转用 `codex`），或目标域名匹配字段写错（`match` 用域名不是 URL）。
-
-**Q：`402` 配额错误？**
-A：跟补丁无关，是中转账号本身欠费/配额用完。
-
-**Q：会影响没在 `routes` 里的渠道吗？**
-A：不会。未命中 `match` 的请求 `wrapper.js` 原样放行，连请求头都不重建，零接触。
-
-**Q：会被 ZCode 检测到吗？**
-A：本插件只动本地文件（`app.asar` + `zcode.cjs`），不联网注册、不上报；ZCode 内置完整性校验是否会检查 asar 哈希不在本项目控制范围。
-
----
-
-## 9. 免责声明
-
-本项目属于第三方补丁，会解包并重打包 ZCode 的 `app.asar`，存在随官方升级失效、违反服务条款等风险。详见 [DISCLAIMER.md](./DISCLAIMER.md)。
-
-**仅供学习研究；使用风险自负。**
-
----
-
-## 10. 文件清单
-
-```
-zcode-route-override/
-├─ wrapper.js                          核心 fetch patch + CONNECT 隧道 + 配置服务
-├─ ui_route_override.js                设置页 UI 注入脚本（Base URL 下两个下拉）
-├─ inject-zcode-wrapper.py             zcode.cjs 注入器（幂等，二进制安全，参数可传路径）
-├─ inject-route-override-ui.py         asar renderer 注入器
-├─ patch-route-override.bat            一键安装：zcode.cjs 注入 + asar 解包注入回打包，失败自动还原
-├─ unpatch-route-override.bat          一键卸载
-├─ standalone-proxy.py                 Plan B：独立反向代理（零侵入模式，见 6.5 节）
-├─ start-standalone-proxy.bat          Plan B 启动脚本
-├─ route-overrides.example.json        配置示例
-├─ DISCLAIMER.md                       免责声明
-├─ LICENSE                             许可证
-└─ test/
-   ├─ echo-server.js
-   ├─ test-headers.js                  单测：请求头构建
-   ├─ test-headers.json
-   ├─ test-config-server.js            单测：配置服务
-   └─ test-tunnel.js                   集成测试（需 AGENTROUTER_KEY 环境变量）
-```
+[MIT](LICENSE)
