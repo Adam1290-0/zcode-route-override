@@ -135,6 +135,15 @@ function buildHeaders(srcHeaders, route) {
   Object.assign(out, route.customHeaders || {});
   const rm = new Set((route.removeHeaders || []).map((s) => String(s).toLowerCase()));
   for (const k of Object.keys(out)) if (rm.has(k.toLowerCase())) delete out[k];
+  // HTTP header values must be ByteStrings — non-ASCII (e.g. Chinese) makes
+  // fetch throw locally and kills the request. Drop them with a warning
+  // instead of failing the whole turn.
+  for (const k of Object.keys(out)) {
+    if (typeof out[k] === "string" && !/^[\x00-\xff]*$/.test(out[k])) {
+      log("WARN: header '" + k + "' dropped - value contains non-ASCII characters (HTTP forbids it)");
+      delete out[k];
+    }
+  }
   return out;
 }
 
