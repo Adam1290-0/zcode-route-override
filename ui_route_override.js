@@ -16,6 +16,7 @@
     { v: 'none', label: '默认（ZCode 原生）' },
     { v: 'claude-code', label: 'Claude Code' },
     { v: 'codex', label: 'Codex CLI' },
+    { v: 'opensquilla', label: 'OpenSquilla' },
     { v: 'custom', label: '自定义…' },
   ];
   var NET_OPTS = [

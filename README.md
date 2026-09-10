@@ -33,7 +33,7 @@ Give the [ZCode](https://zcode.z.ai) desktop app per-provider request-header pre
 
 ### Features
 
-- 🎭 **Per-provider header presets**: default / Claude Code / Codex CLI / custom — two dropdowns (请求头 / 网络) below the Base URL field in the model-settings page
+- 🎭 **Per-provider header presets**: default / Claude Code / Codex CLI / OpenSquilla / custom — two dropdowns (请求头 / 网络) below the Base URL field in the model-settings page
 - ✍️ **Custom headers**: multi-line `Header: Value` (prefix `-` to remove a header); the whitelist rebuild strips ZCode's own identity headers (`x-client-language`, `x-device-mid`, …) so relays can't fingerprint you
 - 🌐 **Per-provider VPN tunnel**: only providers you mark go through the proxy (reverse whitelist) — everything else stays direct, zero wasted VPN traffic
 - ⚙️ **Zero extra processes**: the wrapper lives inside ZCode's CLI core (one-line try/catch `require` in `zcode.cjs`); the CONNECT tunnel is Node-stdlib only and dies with ZCode
@@ -119,7 +119,7 @@ ZCode's CLI core (`zcode.cjs`) is a standalone Node process — the AI SDK resol
 
 ### 功能
 
-- 🎭 **渠道级请求头预设**：默认 / Claude Code / Codex CLI / 自定义——模型设置页 Base URL 下方「请求头」「网络」两个下拉，每个供应商独立配置
+- 🎭 **渠道级请求头预设**：默认 / Claude Code / Codex CLI / OpenSquilla / 自定义——模型设置页 Base URL 下方「请求头」「网络」两个下拉，每个供应商独立配置
 - ✍️ **自定义请求头**：多行 `Header: Value`（行首 `-` 表示删除该头）；白名单重建会剥掉 ZCode 的特征头（`x-client-language`、`x-device-mid` 等），中转站无法指纹识别
 - 🌐 **per-渠道 VPN 隧道**：只有你点名的渠道走代理（反向白名单）——其他渠道原样直连，一分 VPN 流量都不浪费
 - ⚙️ **零额外进程**：wrapper 活在 ZCode 的 CLI 核心进程里（`zcode.cjs` 头部一行 try/catch require），CONNECT 隧道纯 Node 标准库实现，随 ZCode 生灭
@@ -201,6 +201,11 @@ ZCode 的 CLI 核心（`zcode.cjs`）是独立 Node 子进程，AI SDK 对 `glob
 5. **UI**：渲染层脚本用 API Key 密码框定位编辑面板（供应商列表没有密码框，天然区分），切换供应商时按当前面板的域名重建控件——不会写串渠道。
 
 ### 更新日志 / Changelog
+
+### v1.0.1
+
+- 🆕 新增 OpenSquilla 请求头预设（归因头 + X-OpenSquilla-* 关联头套件，面向 OpenSquilla 生态平台）
+- 🐛 UI 面板定位回退锚点：API Key 非密码输入框的供应商也能正常显示下拉
 
 ### v1.0.0
 

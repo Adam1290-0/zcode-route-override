@@ -54,6 +54,16 @@ const PRESETS = {
     "user-agent": "codex_cli_rs/0.96.0 (Windows 11 x86_64)",
     "openai-beta": "responses=experimental",
   },
+  opensquilla: {
+    "user-agent": "python-httpx/0.28.1",
+    "HTTP-Referer": "https://opensquilla.ai",
+    "X-Title": "OpenSquilla",
+    "X-OpenSquilla-Install-Id": "c6871993bb7f49cbbc5f2a1b9ce4c4c7",
+    "X-OpenSquilla-Session-Id": "2911df9c-568a-4675-bc10-2063a8a4c71e",
+    "X-OpenSquilla-Turn-Id": "1069678b-ca92-4cbc-83c6-26e53fc44e91",
+    "X-OpenSquilla-Execution-Id": "8602d858-324f-4f34-a884-dda3e1842e1f",
+    "X-OpenSquilla-Call-Kind": "agent.chat",
+  },
 };
 
 let config = { routes: [] };
