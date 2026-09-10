@@ -65,7 +65,7 @@ Give the [ZCode](https://zcode.z.ai) desktop app per-provider request-header pre
 | Send a relay through your VPN | Select its provider → 网络 dropdown → **走代理（VPN）** |
 | Set fully custom headers | 请求头 → **自定义…** → enter `Header: Value` per line; prefix `-` to delete a header |
 | Turn everything off (soft switch) | Edit `route-overrides.json` next to the wrapper → set `"routes": []` |
-| Plan B without patching ZCode | Run `start-standalone-proxy.bat` and point the provider's Base URL at `http://127.0.0.1:8899/v1` |
+| Plan B without patching ZCode | Run `start-standalone-proxy.bat <upstream-url>` and point the provider's Base URL at `http://127.0.0.1:8899/v1` |
 
 ### Files
 

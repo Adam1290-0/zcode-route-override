@@ -16,7 +16,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import os, sys
 LISTEN_PORT = int(os.environ.get("PROXY_PORT", "8899"))
-UPSTREAM = (sys.argv[1] if len(sys.argv) > 1 else "https://agentrouter.org").rstrip("/")
+UPSTREAM = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
+if not UPSTREAM:
+    print("usage: python standalone-proxy.py <upstream-url>   (e.g. https://api.example.com)")
+    sys.exit(1)
 # VPN/system proxy: set PROXY_URL env, or empty string to connect directly
 OUTBOUND_PROXY = os.environ.get("PROXY_URL", "http://127.0.0.1:12334")
 
