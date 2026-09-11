@@ -305,9 +305,23 @@ function startConfigServer() {
       req.on("end", () => {
         try {
           const parsed = JSON.parse(body);
-          if (!parsed || !Array.isArray(parsed.routes)) throw new Error("routes[] required");
+          let routes;
+          if (parsed && parsed.mode === "upsert") {
+            // Merge on disk truth: the caller only touches ITS OWN host entry.
+            // A stale UI state (empty/partial routes) can never wipe other
+            // providers' routes again (root cause of the vanishing-routes bug).
+            if (!parsed.route || typeof parsed.route.match !== "string") {
+              throw new Error("upsert requires a route with a match field");
+            }
+            routes = config.routes.filter((r) => r.match !== parsed.route.match);
+            if (!parsed.remove) routes.push(parsed.route);
+          } else if (parsed && Array.isArray(parsed.routes)) {
+            routes = parsed.routes;
+          } else {
+            throw new Error("routes[] required");
+          }
           const tmp = CONFIG_PATH + ".tmp";
-          fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2));
+          fs.writeFileSync(tmp, JSON.stringify({ routes }, null, 2));
           fs.renameSync(tmp, CONFIG_PATH);
           loadConfig();
           res.writeHead(200, { "content-type": "application/json" });

@@ -1,0 +1,9 @@
+{
+  "routes": [
+    {
+      "match": "only.example.com",
+      "preset": "none",
+      "proxy": null
+    }
+  ]
+}

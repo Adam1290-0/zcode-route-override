@@ -40,11 +40,16 @@
       state.routes = (cfg && cfg.routes) || [];
     }).catch(function () { state.routes = []; });
   }
-  function saveRoutes() {
+  function saveRoutes(route, remove) {
+    // Upsert: the server merges against ITS OWN disk state, so a stale UI
+    // state can never wipe other providers' routes (vanishing-routes bug).
     return api('/api/config', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ routes: state.routes }),
+      body: JSON.stringify({ mode: 'upsert', route: route, remove: !!remove }),
+    }).then(function (r) {
+      // refresh local mirror from server truth
+      return loadRoutes().then(function () { return r; });
     });
   }
 
@@ -282,7 +287,9 @@
       statusA.textContent = '保存中…';
       clearTimeout(saveTimer);
       saveTimer = setTimeout(function () {
-        saveRoutes().then(function () {
+        // upsert THIS provider's route only; server merges against disk truth
+        var r = findRoute(host);
+        saveRoutes(r, !r).then(function () {
           statusA.textContent = '✓ 已生效';
           setTimeout(function () { statusA.textContent = ''; }, 1600);
         }).catch(function () {
