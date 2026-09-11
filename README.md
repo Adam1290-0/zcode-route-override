@@ -4,7 +4,7 @@
 
 [English](#english) · [中文](#中文)
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.0.1-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 给 [ZCode](https://zcode.z.ai) 桌面端加上「渠道级请求头预设 + per-渠道 VPN 隧道」：每个自定义模型供应商（中转站）可单独设置请求头伪装（Claude Code / Codex / 自定义）与是否走本地 VPN 代理出站，全部内置在 ZCode 进程内——零额外进程、零手动操作、打开 VPN 即自动生效。模型设置页 Base URL 下方两个下拉直接配置。
 
@@ -18,7 +18,8 @@ Give the [ZCode](https://zcode.z.ai) desktop app per-provider request-header pre
 
 | 补丁版本 | 适配 ZCode 版本 | 状态 | 主要变化 |
 |---|---|---|---|
-| **v1.0.0（最新）** | **3.11.2** | ✅ 当前维护版本 | 首个版本：渠道级请求头预设（Claude Code / Codex / 自定义）+ per-渠道 VPN 隧道（CONNECT）+ 设置页下拉 UI + 配置服务 token 鉴权 |
+| **v1.0.1（最新）** | **3.11.2** | ✅ 当前维护版本 | 🆕 OpenSquilla 预设 + 非 ASCII 头值防护 + UI 锚点回退 + 发布物脱敏 |
+| v1.0.0 | 3.11.2 | ✅ | 首个版本：渠道级请求头预设（Claude Code / Codex / 自定义）+ per-渠道 VPN 隧道（CONNECT）+ 设置页下拉 UI + 配置服务 token 鉴权 |
 
 > ⚠️ 本项目是**社区第三方补丁**，通过向 ZCode 的 CLI 核心（`zcode.cjs`）注入一行 require 并修改 `app.asar`（渲染层注入）实现，**与 ZCode 官方无关**。使用前请阅读 [DISCLAIMER.md](DISCLAIMER.md)。
 >
