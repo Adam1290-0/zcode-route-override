@@ -352,11 +352,46 @@
   }
   var currentHost = null;
 
-  // main loop: every tick re-resolves the current provider host and rebuilds
-  // the row if the panel switched providers. Saving is debounced and reads
-  // state.routes (per-host entries), so a rebuild never cross-writes routes.
+  // Immediate refresh on provider switch. MutationObserver fires only when the
+  // DOM actually changes (React rebuilds the provider panel on switch), so it
+  // costs nothing while idle — unlike the old 1.5s poll. Our own injected row
+  // (and its holder) is filtered out so the observer never loops on itself;
+  // mount() is already idempotent as a second guard.
+  var moTimer = null;
+  function scheduleMountSoon() {
+    if (moTimer) return;
+    moTimer = setTimeout(function () {
+      moTimer = null;
+      try { mount(); } catch (e) { /* never break the host page */ }
+    }, 50);
+  }
+  function isOurNode(node) {
+    if (!node || node.nodeType !== 1) return false; // element nodes only
+    if (node.id === MY_ROW_ID) return true;
+    if (node.hasAttribute && node.hasAttribute('data-zro-holder')) return true;
+    return !!(node.closest && node.closest('#' + MY_ROW_ID + ', [data-zro-holder]'));
+  }
+  var mo = new MutationObserver(function (muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var m = muts[i];
+      var onlyOurs = true;
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        if (!isOurNode(m.addedNodes[j])) { onlyOurs = false; break; }
+      }
+      if (onlyOurs) {
+        for (var k = 0; k < m.removedNodes.length; k++) {
+          if (!isOurNode(m.removedNodes[k])) { onlyOurs = false; break; }
+        }
+      }
+      if (!onlyOurs) { scheduleMountSoon(); return; }
+    }
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  // Fallback poll (reduced): re-assert the row if React reconciliation removes
+  // it without a provider switch (rare). Not the primary refresh path anymore.
   setInterval(function () {
     try { mount(); } catch (e) { /* never break the host page */ }
-  }, 1500);
+  }, 3000);
   loadRoutes().then(function () { try { mount(); } catch (e) {} });
 })();
