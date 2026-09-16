@@ -4,7 +4,7 @@
 
 [English](#english) · [中文](#中文)
 
-![Version](https://img.shields.io/badge/version-1.0.2-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.0.3-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 给 [ZCode](https://zcode.z.ai) 桌面端加上「渠道级请求头预设 + per-渠道 VPN 隧道」：每个自定义模型供应商（中转站）可单独设置请求头伪装（Claude Code / Codex / 自定义）与是否走本地 VPN 代理出站，全部内置在 ZCode 进程内——零额外进程、零手动操作、打开 VPN 即自动生效。模型设置页 Base URL 下方两个下拉直接配置。
 
@@ -18,7 +18,8 @@ Give the [ZCode](https://zcode.z.ai) desktop app per-provider request-header pre
 
 | 补丁版本 | 适配 ZCode 版本 | 状态 | 主要变化 |
 |---|---|---|---|
-| **v1.0.2（最新）** | **3.11.2** | ✅ 当前维护版本 | 🐛 修复渠道设置丢失（upsert 保存机制） |
+| **v1.0.3（最新）** | **3.11.2** | ✅ 当前维护版本 | 🐛 修复编辑面板定位（非密码框供应商、初始加载竞态）+ 事件驱动刷新 |
+| v1.0.2 | 3.11.2 | ✅ | 🐛 修复渠道设置丢失（upsert 保存机制） |
 | v1.0.1 | 3.11.2 | ✅ | 🆕 OpenSquilla 预设 + 非 ASCII 头值防护 + UI 锚点回退 + 发布物脱敏 |
 | v1.0.0 | 3.11.2 | ✅ | 首个版本：渠道级请求头预设（Claude Code / Codex / 自定义）+ per-渠道 VPN 隧道（CONNECT）+ 设置页下拉 UI + 配置服务 token 鉴权 |
 
@@ -58,6 +59,10 @@ Give the [ZCode](https://zcode.z.ai) desktop app per-provider request-header pre
 1. Quit ZCode
 2. Double-click `unpatch-route-override.bat`
 3. Restores `zcode.cjs.robak` + `app.asar.robak` (created automatically on first patch) — removes this patch only, keeps other injections (e.g. zcode-skin-manager)
+
+### Coexistence with other patches
+
+`patch-route-override.bat` extracts from the **current** `app.asar` (not an old backup) and re-injects idempotently, so it preserves other patches such as [zcode-skin-manager](https://github.com/Adam1290-0/zcode-skin-manager), [zcode-account-switcher](https://github.com/Adam1290-0/zcode-account-switcher) and [zcode-pin](https://github.com/Adam1290-0/zcode-pin) — and vice versa. Any order, any number of runs.
 
 ### Usage
 
@@ -112,7 +117,7 @@ ZCode's CLI core (`zcode.cjs`) is a standalone Node process — the AI SDK resol
 2. **Rewrite** — matching requests get their headers rebuilt from a whitelist (auth + protocol headers kept, ZCode fingerprint headers dropped), then the chosen preset (claude-code / codex) or custom headers are applied.
 3. **Tunnel (optional)** — if the route sets `proxy`, the request goes out through a hand-rolled CONNECT tunnel (`net.connect` → `CONNECT` → `tls.connect` → `http.request` over the established TLS socket), preserving SSE streaming via `Readable.toWeb`.
 4. **Config service** — `wrapper.js` also serves `127.0.0.1:27891` (GET/POST `/api/config`) with a per-install auth token plus Origin/Host guards; `fs.watch` hot-reloads changes within a second.
-5. **UI** — the renderer script locates the provider edit panel by its API-key password input (the provider list has none), so switching providers rebuilds the controls for the right host — no cross-writing.
+5. **UI** — the renderer script locates the provider edit panel by its visible Base URL input (preferring the active/focused panel), so switching providers rebuilds the controls for the right host — no cross-writing.
 
 ---
 
@@ -139,7 +144,7 @@ ZCode's CLI core (`zcode.cjs`) is a standalone Node process — the AI SDK resol
 3. 双击 `patch-route-override.bat`，等待出现 `[SUCCESS]`
 4. 重新打开 ZCode → 设置 → 模型设置 → 选一个自定义供应商 → Base URL 下方出现「请求头」「网络」两个下拉
 
-> 💡 **与其他注入补丁共存**：patch 从**当前** app.asar 解包（不是老备份），注入幂等——重打本补丁自动替换旧注入、保留其他补丁（如 [zcode-skin-manager](https://github.com/Adam1290-0/zcode-skin-manager)、[zcode-account-switcher](https://github.com/Adam1290-0/zcode-account-switcher)）的修改，任意顺序反复打互不覆盖。
+> 💡 **与其他注入补丁共存**：patch 从**当前** app.asar 解包（不是老备份），注入幂等——重打本补丁自动替换旧注入、保留其他补丁（如 [zcode-skin-manager](https://github.com/Adam1290-0/zcode-skin-manager)、[zcode-account-switcher](https://github.com/Adam1290-0/zcode-account-switcher)、[zcode-pin](https://github.com/Adam1290-0/zcode-pin)）的修改，任意顺序反复打互不覆盖。
 
 ### 卸载
 
@@ -200,9 +205,15 @@ ZCode 的 CLI 核心（`zcode.cjs`）是独立 Node 子进程，AI SDK 对 `glob
 2. **重写**：命中请求按白名单重建头（保留认证/协议头，剥掉 ZCode 特征头），再叠加所选预设（claude-code / codex）或自定义头。
 3. **隧道（可选）**：路由带 `proxy` 时经手写 CONNECT 隧道出站（`net.connect` → `CONNECT` → `tls.connect` → `http.request` 复用已建立的 TLS socket），`Readable.toWeb` 保证 SSE 流式完整。
 4. **配置服务**：`wrapper.js` 同时提供 `127.0.0.1:27891`（GET/POST `/api/config`），带安装时生成的随机 token + Origin/Host 双重校验；`fs.watch` 秒级热更新。
-5. **UI**：渲染层脚本用 API Key 密码框定位编辑面板（供应商列表没有密码框，天然区分），切换供应商时按当前面板的域名重建控件——不会写串渠道。
+5. **UI**：渲染层脚本按可见的 Base URL 输入定位编辑面板（优先当前活跃/聚焦的面板），切换供应商时按当前面板的域名重建控件——不会写串渠道。
 
 ### 更新日志 / Changelog
+
+### v1.0.3
+
+- 🐛 修复编辑面板定位：API key 非密码框的供应商（openai / openai-compatible）此前可能抓取其他供应商的密码框，导致请求头下拉错误显示「默认」——现在按可见的 Base URL 输入定位，并优先当前活跃/聚焦的面板
+- 🐛 修复初始加载竞态：`/api/config` 首次返回前不再渲染空状态下拉（杜绝启动瞬间的「默认」闪现）
+- ⚡ 供应商切换改为事件驱动刷新（MutationObserver 即时响应），轮询降为 3 秒兜底
 
 ### v1.0.2
 
