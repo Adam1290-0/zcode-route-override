@@ -25,6 +25,7 @@
   ];
   var MY_ROW_ID = 'zro-row';
   var state = { routes: [], host: null };
+  var loaded = false; // set after the first /api/config fetch resolves; blocks rendering "默认" from an empty state
 
   // ------------------------------------------------------------- config I/O
   function api(path, opts) {
@@ -68,36 +69,94 @@
   }
 
   // ------------------------------------------------------------- DOM
-  // The provider EDIT panel is the one that also contains an API-key input
-  // (type=password or placeholder mentioning key). The left provider LIST has
-  // no such input, which is how we tell them apart. Scoping to the edit panel
-  // is what keeps this per-provider instead of "first URL input on page".
+  function isVisible(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var cs = window.getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    if (cs.opacity === '0') return false;
+    var r = el.getBoundingClientRect();
+    // An invisible (display:none / detached) element reports 0x0 AND a null
+    // offsetParent; a live panel can briefly report 0x0 while mounting, so
+    // reject on the combination only, never on 0x0 alone.
+    if (r.width === 0 && r.height === 0 && el.offsetParent === null) return false;
+    return true;
+  }
+  // The EDIT panel is the one whose Base URL input is actually on screen.
+  // Anchoring to the first VISIBLE URL input is the ground truth for "which
+  // provider is being edited right now". The old "first password input"
+  // heuristic broke for providers whose API key is not a password field
+  // (openai / openai-compatible): it grabbed a different provider's password
+  // box, resolved the wrong host, and the header dropdown showed "默认".
+  // Walks up from an input to the first ancestor containing >=2 inputs (the
+  // form-ish panel). Returns null when no such panel exists within 10 levels.
+  function panelFromInput(inp) {
+    var el = inp.parentElement;
+    for (var up = 0; up < 10 && el && el !== document.body; up++) {
+      if (el.querySelectorAll('input').length >= 2) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+  // A panel is "live" when the focused element or :focus-within sits inside
+  // it; stale copies of the panel in hidden tabs fail this test.
+  function isLivePanel(panel, activeEl) {
+    if (activeEl && activeEl.nodeType === 1 && panel.contains(activeEl)) return true;
+    if (!panel.matches) return false;
+    try { return panel.matches(':focus-within'); } catch (e) { return false; }
+  }
+  var retryTimer = null;
+  function schedulePanelRetry() {
+    if (retryTimer) return; // at most one outstanding retry
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      try { mount(); } catch (e) { /* never break the host page */ }
+    }, 150);
+  }
   function findEditPanel() {
-    // Primary: the API-key password input, then walk up until the panel also
-    // contains a URL-ish (Base URL) input.
+    var ae = document.activeElement;
+    // The focused input is the strongest signal of which panel is being
+    // edited right now; it beats any stale "first visible URL input" seated
+    // in a dead tab or list item.
+    if (ae && ae.nodeType === 1 && ae.tagName === 'INPUT') {
+      var focusedUrl = /^https?:\/\//i.test(ae.value || '') ||
+                       /example\.com/i.test(ae.placeholder || '');
+      if (focusedUrl || ae.type === 'password') {
+        var fromActive = panelFromInput(ae);
+        if (fromActive) return fromActive;
+      }
+    }
+    var all = document.querySelectorAll('input:not([type="password"])');
+    var firstPanel = null;
+    for (var i = 0; i < all.length; i++) {
+      var v = all[i].value || '';
+      var ph = all[i].placeholder || '';
+      if (!/^https?:\/\//i.test(v) && !/example\.com/i.test(ph)) continue;
+      if (!isVisible(all[i])) continue;
+      var panel = panelFromInput(all[i]);
+      if (!panel) continue; // no verified panel ancestor — skip this candidate
+      if (isLivePanel(panel, ae)) return panel; // live panel wins outright
+      if (!firstPanel) firstPanel = panel; // structural match, last-resort
+    }
+    // Nothing is focused yet (fresh edit-session): the first structural panel
+    // is still the right guess — the old code returned an unverified shallow
+    // parent here instead.
+    if (firstPanel) return firstPanel;
+    // Fallback: keep the password heuristic for panels not yet showing a URL.
     var pw = document.querySelector('input[type="password"]');
     if (pw) {
       var el = pw.parentElement;
       for (var up = 0; up < 10 && el && el !== document.body; up++) {
         var inputs = el.querySelectorAll('input:not([type="password"])');
-        for (var i = 0; i < inputs.length; i++) {
-          var v = inputs[i].value || '';
-          var ph = inputs[i].placeholder || '';
-          if (/^https?:\/\//i.test(v) || /example\.com/i.test(ph)) return el;
+        for (var j = 0; j < inputs.length; j++) {
+          var v2 = inputs[j].value || '';
+          var ph2 = inputs[j].placeholder || '';
+          if (/^https?:\/\//i.test(v2) || /example\.com/i.test(ph2)) return el;
         }
         el = el.parentElement;
       }
-    }
-    // Fallback: some providers render the API key as masked text (no password
-    // input) — locate the panel by the "Base URL" label text instead.
-    var labels = document.querySelectorAll('label, [class*="label"]');
-    for (var l = 0; l < labels.length; l++) {
-      if (!/base\s*url/i.test(labels[l].textContent || '')) continue;
-      var host = labels[l].parentElement;
-      for (var h = 0; h < 8 && host && host !== document.body; h++) {
-        if (host.querySelectorAll('input').length >= 3) return host; // a form-ish panel
-        host = host.parentElement;
-      }
+      // A password exists but no panel resolved: the URL input is probably
+      // still mounting, so retry shortly after.
+      schedulePanelRetry();
     }
     return null;
   }
@@ -327,12 +386,13 @@
     }
   }
 
-  function mount() {
+  function mount(force) {
     var host = currentPanelHost();
     if (!host) { unmount(); currentHost = null; return; }
+    if (!loaded) return; // first /api/config fetch still pending; the caller below force-mounts when it resolves
 
     var existing = document.getElementById(MY_ROW_ID);
-    if (existing && currentHost === host &&
+    if (!force && existing && currentHost === host &&
         existing.closest('[data-zro-holder]') &&
         document.contains(existing)) return; // correct provider, still alive
 
@@ -393,5 +453,8 @@
   setInterval(function () {
     try { mount(); } catch (e) { /* never break the host page */ }
   }, 3000);
-  loadRoutes().then(function () { try { mount(); } catch (e) {} });
+  loadRoutes().then(function () {
+    loaded = true;
+    try { mount(true); } catch (e) {}
+  });
 })();
